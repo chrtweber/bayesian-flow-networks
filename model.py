@@ -148,7 +148,7 @@ class CtsBayesianFlow(BayesianFlow):
     # generates noisy params for input distribution at different time steps for training
     # data = ground truth! (x)
     # see equation (82) in BFN paper
-    # mu_t = gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon
+    # mu_t = gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon  # (82)
     def forward(self, data: Tensor, t: Tensor) -> tuple[Tensor, None]:
         post_var = torch.pow(self.min_variance, t)  # (gamma_t)
         alpha_t = 1 - post_var  # (1 - gamma_t)
@@ -158,7 +158,7 @@ class CtsBayesianFlow(BayesianFlow):
         noise = torch.randn(mean_mean.shape, device=mean_mean.device)  # (epsilon)
         mean = mean_mean + (
             mean_std_dev * noise
-        )  # gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon
+        )  # gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon  # (82)
         # We don't need to compute the variance because it is not needed by the network, so set it to None
         input_params = (mean, None)
         return input_params
@@ -174,10 +174,10 @@ class CtsBayesianFlow(BayesianFlow):
         return torch.zeros(*data_shape, device=device), 1.0
 
     # see equation (95) in BFN paper
-    # see chapter 4 algorithm 3: Sample Generation for Continuous Data in BFN paper
+    # alpha_i = (sigma_1 ^ (-2i / n)) * (1 - sigma_1 ^ (2 / n))                     (95)
     def get_alpha(self, i: Union[int, Tensor], n_steps: int) -> Union[float, Tensor]:
         sigma_1 = math.sqrt(self.min_variance)
-        return (sigma_1 ** (-2 * i / n_steps)) * (1 - sigma_1 ** (2 / n_steps))
+        return (sigma_1 ** (-2 * i / n_steps)) * (1 - sigma_1 ** (2 / n_steps))  #  (95)
 
     def get_sender_dist(
         self, x: Tensor, alpha: Union[float, Tensor], shape=torch.Size([])
@@ -187,14 +187,16 @@ class CtsBayesianFlow(BayesianFlow):
 
     # bayesian update
     # see equations (46) & (47) in BFN paper
-    # rho_b = rho_a + alpha
-    # mu_b = (mu_a * rho_a + y * alpha) / rho_b
+    # rho_b = rho_a + alpha                         (46)
+    # mu_b = (mu_a * rho_a + y * alpha) / rho_b     (47)
     def update_input_params(
         self, input_params: tuple[Tensor, float], y: Tensor, alpha: float
     ) -> tuple[Tensor, float]:
         input_mean, input_precision = input_params
-        new_precision = input_precision + alpha
-        new_mean = ((input_precision * input_mean) + (alpha * y)) / new_precision
+        new_precision = input_precision + alpha  #  (46)
+        new_mean = (
+            (input_precision * input_mean) + (alpha * y)
+        ) / new_precision  #                        (47)
         return new_mean, new_precision
 
 
@@ -493,7 +495,7 @@ class BFN(nn.Module):
         t = (torch.ones_like(data).flatten(start_dim=1) * t).reshape_as(data)
         return t
 
-    # BOB ?
+    # BOB
     def forward(
         self, data: Tensor, t: Optional[Tensor] = None, n_steps: Optional[int] = None
     ) -> tuple[Tensor, dict[str, Tensor], Tensor, Tensor]:
@@ -541,7 +543,7 @@ class BFN(nn.Module):
         )
 
     @torch.inference_mode()
-    # ALICE ?
+    # ALICE
     def sample(self, data_shape: tuple, n_steps: int) -> Tensor:
         device = next(self.parameters()).device
         input_params = self.bayesian_flow.get_prior_input_params(data_shape, device)
