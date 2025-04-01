@@ -15,7 +15,7 @@
 """
 This file implements the Bayesian Flow and BFN loss for continuous and discrete variables.
 Finally it implements the BFN using these objects.
-For consistency we use always use a tuple to store input parameters.
+For consistency we always use a tuple to store input parameters.
 It has just one element for discrete data (the probabilities) and two for continuous/discretized (mean & variance).
 The probability distributions and network architectures are defined in probability.py and networks dir.
 "Cts" is an abbreviation of "Continuous".
@@ -145,14 +145,20 @@ class CtsBayesianFlow(BayesianFlow):
         self.min_variance = min_variance
 
     @torch.no_grad()
+    # generates noisy params for input distribution at different time steps for training
+    # data = ground truth! (x)
+    # see equation (82) in BFN paper
+    # mu_t = gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon
     def forward(self, data: Tensor, t: Tensor) -> tuple[Tensor, None]:
-        post_var = torch.pow(self.min_variance, t)
-        alpha_t = 1 - post_var
-        mean_mean = alpha_t * data
-        mean_var = alpha_t * post_var
-        mean_std_dev = mean_var.sqrt()
-        noise = torch.randn(mean_mean.shape, device=mean_mean.device)
-        mean = mean_mean + (mean_std_dev * noise)
+        post_var = torch.pow(self.min_variance, t)  # (gamma_t)
+        alpha_t = 1 - post_var  # (1 - gamma_t)
+        mean_mean = alpha_t * data  # (gamma_t * x)
+        mean_var = alpha_t * post_var  # (gamma_t * (1 - gamma_t))
+        mean_std_dev = mean_var.sqrt()  # (sqrt(gamma_t * (1 - gamma_t)))
+        noise = torch.randn(mean_mean.shape, device=mean_mean.device)  # (epsilon)
+        mean = mean_mean + (
+            mean_std_dev * noise
+        )  # gamma_t * x + sqrt(gamma_t * (1 - gamma_t)) * epsilon
         # We don't need to compute the variance because it is not needed by the network, so set it to None
         input_params = (mean, None)
         return input_params
@@ -160,11 +166,15 @@ class CtsBayesianFlow(BayesianFlow):
     def params_to_net_inputs(self, params: tuple[Tensor]) -> Tensor:
         return params[0]  # Only the mean is used by the network
 
+    # initial params of input distribution: (0*, 1)
     def get_prior_input_params(
         self, data_shape: tuple, device: torch.device
     ) -> tuple[Tensor, float]:
+        # return has same form as forward return: (mean, variance)
         return torch.zeros(*data_shape, device=device), 1.0
 
+    # see equation (95) in BFN paper
+    # see chapter 4 algorithm 3: Sample Generation for Continuous Data in BFN paper
     def get_alpha(self, i: Union[int, Tensor], n_steps: int) -> Union[float, Tensor]:
         sigma_1 = math.sqrt(self.min_variance)
         return (sigma_1 ** (-2 * i / n_steps)) * (1 - sigma_1 ** (2 / n_steps))
@@ -175,6 +185,10 @@ class CtsBayesianFlow(BayesianFlow):
         dist = D.Normal(x, 1.0 / alpha**0.5)
         return dist
 
+    # bayesian update
+    # see equations (46) & (47) in BFN paper
+    # rho_b = rho_a + alpha
+    # mu_b = (mu_a * rho_a + y * alpha) / rho_b
     def update_input_params(
         self, input_params: tuple[Tensor, float], y: Tensor, alpha: float
     ) -> tuple[Tensor, float]:
@@ -464,19 +478,22 @@ class BFN(nn.Module):
 
     @staticmethod
     @torch.no_grad()
+    # randomly sample t in [0, 1] for continuous data or in [0, n_steps - 1] for discrete data
     def sample_t(data: Tensor, n_steps: Optional[int]) -> Tensor:
-        if n_steps == 0 or n_steps is None:
+        if n_steps == 0 or n_steps is None:  # continuous case: t is in [0, 1]
             t = torch.rand(data.size(0), device=data.device).unsqueeze(-1)
-        else:
+        else:  # discrete case: t is in [0, n_steps - 1]
             t = (
                 torch.randint(
                     0, n_steps, (data.size(0),), device=data.device
                 ).unsqueeze(-1)
                 / n_steps
             )
+        # convert t to the same shape as data
         t = (torch.ones_like(data).flatten(start_dim=1) * t).reshape_as(data)
         return t
 
+    # BOB ?
     def forward(
         self, data: Tensor, t: Optional[Tensor] = None, n_steps: Optional[int] = None
     ) -> tuple[Tensor, dict[str, Tensor], Tensor, Tensor]:
@@ -487,10 +504,11 @@ class BFN(nn.Module):
 
         t = self.sample_t(data, n_steps) if t is None else t
         # sample input parameter flow
+        # call forward function of respective bayesian flow class which returns input params
         input_params = self.bayesian_flow(data, t)
         net_inputs = self.bayesian_flow.params_to_net_inputs(input_params)
 
-        # compute output distribution parameters
+        # compute output distribution parameters using NN
         output_params: Tensor = self.net(net_inputs, t)
 
         # compute KL loss in float32
@@ -523,6 +541,7 @@ class BFN(nn.Module):
         )
 
     @torch.inference_mode()
+    # ALICE ?
     def sample(self, data_shape: tuple, n_steps: int) -> Tensor:
         device = next(self.parameters()).device
         input_params = self.bayesian_flow.get_prior_input_params(data_shape, device)

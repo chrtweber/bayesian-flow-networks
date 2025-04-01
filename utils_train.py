@@ -167,19 +167,52 @@ def make_from_cfg(module, cfg, **parameters):
 
 
 def make_bfn(cfg: DictConfig):
+    # e.g. for cifar10_continuous_16bins:
     data_adapters = {
         "input_adapter": make_from_cfg(adapters, cfg.input_adapter),
+        # input_adapter: FourierImageInputAdapter(
+        #   input_channels: 3
+        #   input_shape: [32, 32]
+        #   output_height: 3
+        #   add_pos_feats: False
+        #   add_mask: False
+        # )
         "output_adapter": make_from_cfg(adapters, cfg.output_adapter),
+        # output_adapter: OutputAdapter(
+        #   input_height: 131
+        #   output_channels: 3 # (r,g,b)
+        #   output_height: 1
+        # )
     }
     net = make_from_cfg(networks, cfg.net, data_adapters=data_adapters)
+    # net = UNetVDM(
+    #   embedding_dim: 128
+    #   n_blocks: 32
+    #   n_attention_heads: 1
+    #   dropout_prob: 0.1
+    #   norm_groups: 32
+    #   input_channels: 3
+    #   use_fourier_features: True
+    #   attention_everywhere: False
+    #   image_size: 32
+    # )
     bayesian_flow = make_from_cfg(model, cfg.bayesian_flow)
+    # bayesian_flow = CtsBayesianFlow(
+    #   min_variance: 1e-3
+    # )
     distribution_factory = make_from_cfg(probability, cfg.distribution_factory)
+    # distribution_factory = DeltaFactory()
     loss = make_from_cfg(
         model,
         cfg.loss,
         bayesian_flow=bayesian_flow,
         distribution_factory=distribution_factory,
     )
+    # loss = CtsBayesianFlowLoss(
+    #   noise_pred: True
+    #   bayesian_flow=bayesian_flow,
+    #   distribution_factory=distribution_factory,
+    # )
     bfn = model.BFN(net=net, bayesian_flow=bayesian_flow, loss=loss)
     return bfn
 
